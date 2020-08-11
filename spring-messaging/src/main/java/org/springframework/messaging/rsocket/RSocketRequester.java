@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import java.util.function.Consumer;
 import io.rsocket.ConnectionSetupPayload;
 import io.rsocket.Payload;
 import io.rsocket.RSocket;
+import io.rsocket.RSocketClient;
 import io.rsocket.transport.ClientTransport;
 import io.rsocket.transport.netty.client.TcpClientTransport;
 import io.rsocket.transport.netty.client.WebsocketClientTransport;
@@ -48,8 +49,18 @@ import org.springframework.util.MimeType;
 public interface RSocketRequester {
 
 	/**
-	 * Return the underlying sending RSocket.
+	 * Return the underlying {@link RSocketClient} used to make requests with.
+	 * @since 5.3
 	 */
+	RSocketClient rsocketClient();
+
+	/**
+	 * Return the underlying {@link RSocket} if the requester was created with a
+	 * "live" RSocket via {@link #wrap(RSocket, MimeType, MimeType, RSocketStrategies)}
+	 * or via one of the (deprecated) connect methods on the
+	 * {@code RSocketRequester} builder, or otherwise return {@code null}.
+	 */
+	@Nullable
 	RSocket rsocket();
 
 	/**
@@ -96,7 +107,6 @@ public interface RSocketRequester {
 	 */
 	RequestSpec metadata(Object metadata, @Nullable MimeType mimeType);
 
-
 	/**
 	 * Obtain a builder to create a client {@link RSocketRequester} by connecting
 	 * to an RSocket server.
@@ -113,7 +123,7 @@ public interface RSocketRequester {
 			RSocket rsocket, MimeType dataMimeType, MimeType metadataMimeType,
 			RSocketStrategies strategies) {
 
-		return new DefaultRSocketRequester(rsocket, dataMimeType, metadataMimeType, strategies);
+		return new DefaultRSocketRequester(null, rsocket, dataMimeType, metadataMimeType, strategies);
 	}
 
 
@@ -186,23 +196,24 @@ public interface RSocketRequester {
 		RSocketRequester.Builder rsocketStrategies(Consumer<RSocketStrategies.Builder> configurer);
 
 		/**
-		 * Callback to configure the {@code ClientRSocketFactory} directly.
+		 * Callback to configure the {@code RSocketConnector} directly.
 		 * <ul>
 		 * <li>The data and metadata mime types cannot be set directly
-		 * on the {@code ClientRSocketFactory} and will be overridden. Use the
+		 * on the {@code RSocketConnector} and will be overridden. Use the
 		 * shortcuts {@link #dataMimeType(MimeType)} and
 		 * {@link #metadataMimeType(MimeType)} on this builder instead.
 		 * <li>The frame decoder also cannot be set directly and instead is set
 		 * to match the configured {@code DataBufferFactory}.
 		 * <li>For the
-		 * {@link io.rsocket.RSocketFactory.ClientRSocketFactory#setupPayload(Payload)
+		 * {@link io.rsocket.core.RSocketConnector#setupPayload(Payload)
 		 * setupPayload}, consider using methods on this builder to specify the
 		 * route, other metadata, and data as Object values to be encoded.
 		 * <li>To configure client side responding, see
-		 * {@link RSocketMessageHandler#clientResponder(RSocketStrategies, Object...)}.
+		 * {@link RSocketMessageHandler#responder(RSocketStrategies, Object...)}.
 		 * </ul>
+		 * @since 5.2.6
 		 */
-		RSocketRequester.Builder rsocketFactory(ClientRSocketFactoryConfigurer configurer);
+		RSocketRequester.Builder rsocketConnector(RSocketConnectorConfigurer configurer);
 
 		/**
 		 * Configure this builder through a {@code Consumer}. This enables
@@ -213,27 +224,64 @@ public interface RSocketRequester {
 		RSocketRequester.Builder apply(Consumer<RSocketRequester.Builder> configurer);
 
 		/**
+		 * Build an {@link RSocketRequester} instance for use with a TCP
+		 * transport. Requests are made via {@link io.rsocket.RSocketClient}
+		 * which establishes a shared TCP connection to given host and port.
+		 * @param host the host of the server to connect to
+		 * @param port the port of the server to connect to
+		 * @return the created {@code RSocketRequester}
+		 * @since 5.3
+		 */
+		RSocketRequester tcp(String host, int port);
+
+		/**
+		 * Build an {@link RSocketRequester} instance for use with a WebSocket
+		 * transport. Requests are made via {@link io.rsocket.RSocketClient}
+		 * which establishes a shared WebSocket connection to given URL.
+		 * @param uri the URL of the server to connect to
+		 * @return the created {@code RSocketRequester}
+		 * @since 5.3
+		 */
+		RSocketRequester websocket(URI uri);
+
+		/**
+		 * Build an {@link RSocketRequester} instance for use with the given
+		 * transport. Requests are made via {@link io.rsocket.RSocketClient}
+		 * which establishes a shared connection through the given transport.
+		 * @param transport the transport to use for connecting to the server
+		 * @return the created {@code RSocketRequester}
+		 * @since 5.3
+		 */
+		RSocketRequester transport(ClientTransport transport);
+
+		/**
 		 * Connect to the server over TCP.
 		 * @param host the server host
 		 * @param port the server port
 		 * @return an {@code RSocketRequester} for the connection
+		 * @deprecated as of 5.3 in favor of {@link #tcp(String, int)}
 		 * @see TcpClientTransport
 		 */
+		@Deprecated
 		Mono<RSocketRequester> connectTcp(String host, int port);
 
 		/**
 		 * Connect to the server over WebSocket.
 		 * @param uri the RSocket server endpoint URI
 		 * @return an {@code RSocketRequester} for the connection
+		 * @deprecated as of 5.3 in favor of {@link #websocket(URI)}
 		 * @see WebsocketClientTransport
 		 */
+		@Deprecated
 		Mono<RSocketRequester> connectWebSocket(URI uri);
 
 		/**
 		 * Connect to the server with the given {@code ClientTransport}.
 		 * @param transport the client transport to use
 		 * @return an {@code RSocketRequester} for the connection
+		 * @deprecated as of 5.3 in favor of {@link #transport(ClientTransport)}
 		 */
+		@Deprecated
 		Mono<RSocketRequester> connect(ClientTransport transport);
 
 	}
@@ -251,6 +299,12 @@ public interface RSocketRequester {
 		 * @throws IllegalArgumentException if not using composite metadata.
 		 */
 		RequestSpec metadata(Consumer<MetadataSpec<?>> configurer);
+
+		/**
+		 * Perform a {@link RSocket#metadataPush(Payload) metadataPush}.
+		 * @since 5.3
+		 */
+		Mono<Void> sendMetadata();
 
 		/**
 		 * Provide payload data for the request. This can be one of:
@@ -320,7 +374,12 @@ public interface RSocketRequester {
 	interface RetrieveSpec {
 
 		/**
-		 * Perform a {@link RSocket#fireAndForget fireAndForget}.
+		 * Perform a {@link RSocket#fireAndForget fireAndForget} sending the
+		 * provided data and metadata.
+		 * @return a completion that indicates if the payload was sent
+		 * successfully or not. Note, however that is a one-way send and there
+		 * is no indication of whether or how the even was handled on the
+		 * remote end.
 		 */
 		Mono<Void> send();
 

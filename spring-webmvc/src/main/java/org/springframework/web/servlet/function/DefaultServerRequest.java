@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.springframework.web.servlet.function;
 
 import java.io.IOException;
@@ -44,6 +43,7 @@ import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
+import javax.servlet.http.Part;
 
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
@@ -51,6 +51,8 @@ import org.springframework.http.HttpRange;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.GenericHttpMessageConverter;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.server.PathContainer;
+import org.springframework.http.server.RequestPath;
 import org.springframework.http.server.ServletServerHttpRequest;
 import org.springframework.lang.Nullable;
 import org.springframework.util.CollectionUtils;
@@ -60,10 +62,9 @@ import org.springframework.util.ObjectUtils;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
-import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import org.springframework.web.util.ServletRequestPathUtils;
 import org.springframework.web.util.UriBuilder;
-import org.springframework.web.util.UrlPathHelper;
 
 /**
  * {@code ServerRequest} implementation based on a {@link HttpServletRequest}.
@@ -75,6 +76,8 @@ class DefaultServerRequest implements ServerRequest {
 
 	private final ServletServerHttpRequest serverHttpRequest;
 
+	private final RequestPath requestPath;
+
 	private final Headers headers;
 
 	private final List<HttpMessageConverter<?>> messageConverters;
@@ -85,9 +88,11 @@ class DefaultServerRequest implements ServerRequest {
 
 	private final Map<String, Object> attributes;
 
+	@Nullable
+	private MultiValueMap<String, Part> parts;
 
-	public DefaultServerRequest(HttpServletRequest servletRequest,
-			List<HttpMessageConverter<?>> messageConverters) {
+
+	public DefaultServerRequest(HttpServletRequest servletRequest, List<HttpMessageConverter<?>> messageConverters) {
 		this.serverHttpRequest = new ServletServerHttpRequest(servletRequest);
 		this.messageConverters = Collections.unmodifiableList(new ArrayList<>(messageConverters));
 		this.allSupportedMediaTypes = allSupportedMediaTypes(messageConverters);
@@ -95,6 +100,12 @@ class DefaultServerRequest implements ServerRequest {
 		this.headers = new DefaultRequestHeaders(this.serverHttpRequest.getHeaders());
 		this.params = CollectionUtils.toMultiValueMap(new ServletParametersMap(servletRequest));
 		this.attributes = new ServletAttributesMap(servletRequest);
+
+		// DispatcherServlet parses the path but for other scenarios (e.g. tests) we might need to
+
+		this.requestPath = (ServletRequestPathUtils.hasParsedRequestPath(servletRequest) ?
+				ServletRequestPathUtils.getParsedRequestPath(servletRequest) :
+				ServletRequestPathUtils.parseAndCache(servletRequest));
 	}
 
 	private static List<MediaType> allSupportedMediaTypes(List<HttpMessageConverter<?>> messageConverters) {
@@ -103,6 +114,7 @@ class DefaultServerRequest implements ServerRequest {
 				.sorted(MediaType.SPECIFICITY_COMPARATOR)
 				.collect(Collectors.toList());
 	}
+
 
 	@Override
 	public String methodName() {
@@ -121,12 +133,12 @@ class DefaultServerRequest implements ServerRequest {
 
 	@Override
 	public String path() {
-		String path = (String) servletRequest().getAttribute(HandlerMapping.LOOKUP_PATH);
-		if (path == null) {
-			UrlPathHelper helper = new UrlPathHelper();
-			path = helper.getLookupPathForRequest(servletRequest());
-		}
-		return path;
+		return pathContainer().value();
+	}
+
+	@Override
+	public PathContainer pathContainer() {
+		return this.requestPath.pathWithinApplication();
 	}
 
 	@Override
@@ -187,11 +199,8 @@ class DefaultServerRequest implements ServerRequest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private <T> T bodyInternal(Type bodyType, Class<?> bodyClass)
-			throws ServletException, IOException {
-
-		MediaType contentType =
-				this.headers.contentType().orElse(MediaType.APPLICATION_OCTET_STREAM);
+	private <T> T bodyInternal(Type bodyType, Class<?> bodyClass) throws ServletException, IOException {
+		MediaType contentType = this.headers.contentType().orElse(MediaType.APPLICATION_OCTET_STREAM);
 
 		for (HttpMessageConverter<?> messageConverter : this.messageConverters) {
 			if (messageConverter instanceof GenericHttpMessageConverter) {
@@ -232,10 +241,23 @@ class DefaultServerRequest implements ServerRequest {
 	}
 
 	@Override
+	public MultiValueMap<String, Part> multipartData() throws IOException, ServletException {
+		MultiValueMap<String, Part> result = this.parts;
+		if (result == null) {
+			result = servletRequest().getParts().stream()
+					.collect(Collectors.groupingBy(Part::getName,
+							LinkedMultiValueMap::new,
+							Collectors.toList()));
+			this.parts = result;
+		}
+		return result;
+	}
+
+	@Override
+	@SuppressWarnings("unchecked")
 	public Map<String, String> pathVariables() {
-		@SuppressWarnings("unchecked")
-		Map<String, String> pathVariables = (Map<String, String>) servletRequest()
-				.getAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
+		Map<String, String> pathVariables = (Map<String, String>)
+				servletRequest().getAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
 		if (pathVariables != null) {
 			return pathVariables;
 		}
@@ -254,8 +276,9 @@ class DefaultServerRequest implements ServerRequest {
 		return Optional.ofNullable(this.serverHttpRequest.getPrincipal());
 	}
 
-	static Optional<ServerResponse> checkNotModified(HttpServletRequest servletRequest, @Nullable Instant lastModified,
-			@Nullable String etag) {
+
+	static Optional<ServerResponse> checkNotModified(
+			HttpServletRequest servletRequest, @Nullable Instant lastModified, @Nullable String etag) {
 
 		long lastModifiedTimestamp = -1;
 		if (lastModified != null && lastModified.isAfter(Instant.EPOCH)) {
@@ -274,75 +297,75 @@ class DefaultServerRequest implements ServerRequest {
 		}
 	}
 
+
 	/**
 	 * Default implementation of {@link Headers}.
 	 */
 	static class DefaultRequestHeaders implements Headers {
 
-		private final HttpHeaders delegate;
+		private final HttpHeaders httpHeaders;
 
-
-		public DefaultRequestHeaders(HttpHeaders delegate) {
-			this.delegate = delegate;
+		public DefaultRequestHeaders(HttpHeaders httpHeaders) {
+			this.httpHeaders = HttpHeaders.readOnlyHttpHeaders(httpHeaders);
 		}
 
 		@Override
 		public List<MediaType> accept() {
-			return this.delegate.getAccept();
+			return this.httpHeaders.getAccept();
 		}
 
 		@Override
 		public List<Charset> acceptCharset() {
-			return this.delegate.getAcceptCharset();
+			return this.httpHeaders.getAcceptCharset();
 		}
 
 		@Override
 		public List<Locale.LanguageRange> acceptLanguage() {
-			return this.delegate.getAcceptLanguage();
+			return this.httpHeaders.getAcceptLanguage();
 		}
 
 		@Override
 		public OptionalLong contentLength() {
-			long value = this.delegate.getContentLength();
+			long value = this.httpHeaders.getContentLength();
 			return (value != -1 ? OptionalLong.of(value) : OptionalLong.empty());
 		}
 
 		@Override
 		public Optional<MediaType> contentType() {
-			return Optional.ofNullable(this.delegate.getContentType());
+			return Optional.ofNullable(this.httpHeaders.getContentType());
 		}
 
 		@Override
 		public InetSocketAddress host() {
-			return this.delegate.getHost();
+			return this.httpHeaders.getHost();
 		}
 
 		@Override
 		public List<HttpRange> range() {
-			return this.delegate.getRange();
+			return this.httpHeaders.getRange();
 		}
 
 		@Override
 		public List<String> header(String headerName) {
-			List<String> headerValues = this.delegate.get(headerName);
+			List<String> headerValues = this.httpHeaders.get(headerName);
 			return (headerValues != null ? headerValues : Collections.emptyList());
 		}
 
 		@Override
 		public HttpHeaders asHttpHeaders() {
-			return HttpHeaders.readOnlyHttpHeaders(this.delegate);
+			return this.httpHeaders;
 		}
 
 		@Override
 		public String toString() {
-			return this.delegate.toString();
+			return this.httpHeaders.toString();
 		}
 	}
+
 
 	private static final class ServletParametersMap extends AbstractMap<String, List<String>> {
 
 		private final HttpServletRequest servletRequest;
-
 
 		private ServletParametersMap(HttpServletRequest servletRequest) {
 			this.servletRequest = servletRequest;
@@ -389,7 +412,6 @@ class DefaultServerRequest implements ServerRequest {
 		public void clear() {
 			throw new UnsupportedOperationException();
 		}
-
 	}
 
 
@@ -443,9 +465,8 @@ class DefaultServerRequest implements ServerRequest {
 			this.servletRequest.removeAttribute(name);
 			return value;
 		}
-
-
 	}
+
 
 	/**
 	 * Simple implementation of {@link HttpServletResponse} used by
@@ -453,7 +474,6 @@ class DefaultServerRequest implements ServerRequest {
 	 * {@link ServletWebRequest#checkNotModified(String, long)}. Throws an {@code UnsupportedOperationException}
 	 * for other methods.
 	 */
-	@SuppressWarnings("deprecation")
 	private static final class CheckNotModifiedResponse implements HttpServletResponse {
 
 		private final HttpHeaders headers = new HttpHeaders();
@@ -486,6 +506,7 @@ class DefaultServerRequest implements ServerRequest {
 		}
 
 		@Override
+		@Deprecated
 		public void setStatus(int sc, String sm) {
 			this.status = sc;
 		}
@@ -496,6 +517,7 @@ class DefaultServerRequest implements ServerRequest {
 		}
 
 		@Override
+		@Nullable
 		public String getHeader(String name) {
 			return this.headers.getFirst(name);
 		}
@@ -503,7 +525,7 @@ class DefaultServerRequest implements ServerRequest {
 		@Override
 		public Collection<String> getHeaders(String name) {
 			List<String> result = this.headers.get(name);
-			return result != null ? result : Collections.emptyList();
+			return (result != null ? result : Collections.emptyList());
 		}
 
 		@Override
@@ -513,6 +535,7 @@ class DefaultServerRequest implements ServerRequest {
 
 
 		// Unsupported
+
 		@Override
 		public void addCookie(Cookie cookie) {
 			throw new UnsupportedOperationException();
@@ -529,11 +552,13 @@ class DefaultServerRequest implements ServerRequest {
 		}
 
 		@Override
+		@Deprecated
 		public String encodeUrl(String url) {
 			throw new UnsupportedOperationException();
 		}
 
 		@Override
+		@Deprecated
 		public String encodeRedirectUrl(String url) {
 			throw new UnsupportedOperationException();
 		}

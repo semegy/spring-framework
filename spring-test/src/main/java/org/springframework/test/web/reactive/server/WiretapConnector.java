@@ -27,9 +27,9 @@ import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
+import reactor.core.publisher.Sinks;
 
 import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.reactive.ClientHttpConnector;
@@ -125,18 +125,15 @@ class WiretapConnector implements ClientHttpConnector {
 	 */
 	final static class WiretapRecorder {
 
-		private static final DataBufferFactory bufferFactory = new DefaultDataBufferFactory();
-
-
 		@Nullable
 		private final Flux<? extends DataBuffer> publisher;
 
 		@Nullable
 		private final Flux<? extends Publisher<? extends DataBuffer>> publisherNested;
 
-		private final DataBuffer buffer = bufferFactory.allocateBuffer();
+		private final DataBuffer buffer = DefaultDataBufferFactory.sharedInstance.allocateBuffer();
 
-		private final MonoProcessor<byte[]> content = MonoProcessor.create();
+		private final MonoProcessor<byte[]> content = MonoProcessor.fromSink(Sinks.one());
 
 		private boolean hasContentConsumer;
 

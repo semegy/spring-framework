@@ -37,6 +37,7 @@ import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.core.ReactiveAdapterRegistry;
+import org.springframework.core.SpringProperties;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.log.LogFormatUtils;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -74,7 +75,6 @@ import org.springframework.web.method.annotation.ErrorsMethodArgumentResolver;
 import org.springframework.web.method.annotation.ExpressionValueMethodArgumentResolver;
 import org.springframework.web.method.annotation.InitBinderDataBinderFactory;
 import org.springframework.web.method.annotation.MapMethodProcessor;
-import org.springframework.web.method.annotation.ModelAttributeMethodProcessor;
 import org.springframework.web.method.annotation.ModelFactory;
 import org.springframework.web.method.annotation.ModelMethodProcessor;
 import org.springframework.web.method.annotation.RequestHeaderMapMethodArgumentResolver;
@@ -108,12 +108,20 @@ import org.springframework.web.util.WebUtils;
  *
  * @author Rossen Stoyanchev
  * @author Juergen Hoeller
+ * @author Sebastien Deleuze
  * @since 3.1
  * @see HandlerMethodArgumentResolver
  * @see HandlerMethodReturnValueHandler
  */
 public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 		implements BeanFactoryAware, InitializingBean {
+
+	/**
+	 * Boolean flag controlled by a {@code spring.xml.ignore} system property that instructs Spring to
+	 * ignore XML, i.e. to not initialize the XML-related infrastructure.
+	 * <p>The default is "false".
+	 */
+	private static final boolean shouldIgnoreXml = SpringProperties.getFlag("spring.xml.ignore");
 
 	/**
 	 * MethodFilter that matches {@link InitBinder @InitBinder} methods.
@@ -151,7 +159,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 
 	private List<HttpMessageConverter<?>> messageConverters;
 
-	private List<Object> requestResponseBodyAdvice = new ArrayList<>();
+	private final List<Object> requestResponseBodyAdvice = new ArrayList<>();
 
 	@Nullable
 	private WebBindingInitializer webBindingInitializer;
@@ -180,7 +188,6 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 	@Nullable
 	private ConfigurableBeanFactory beanFactory;
 
-
 	private final Map<Class<?>, SessionAttributesHandler> sessionAttributesHandlerCache = new ConcurrentHashMap<>(64);
 
 	private final Map<Class<?>, Set<Method>> initBinderCache = new ConcurrentHashMap<>(64);
@@ -196,11 +203,13 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 		this.messageConverters = new ArrayList<>(4);
 		this.messageConverters.add(new ByteArrayHttpMessageConverter());
 		this.messageConverters.add(new StringHttpMessageConverter());
-		try {
-			this.messageConverters.add(new SourceHttpMessageConverter<>());
-		}
-		catch (Error err) {
-			// Ignore when no TransformerFactory implementation is available
+		if (!shouldIgnoreXml) {
+			try {
+				this.messageConverters.add(new SourceHttpMessageConverter<>());
+			}
+			catch (Error err) {
+				// Ignore when no TransformerFactory implementation is available
+			}
 		}
 		this.messageConverters.add(new AllEncompassingFormHttpMessageConverter());
 	}
@@ -632,7 +641,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 	 * and custom resolvers provided via {@link #setCustomArgumentResolvers}.
 	 */
 	private List<HandlerMethodArgumentResolver> getDefaultArgumentResolvers() {
-		List<HandlerMethodArgumentResolver> resolvers = new ArrayList<>();
+		List<HandlerMethodArgumentResolver> resolvers = new ArrayList<>(30);
 
 		// Annotation-based argument resolution
 		resolvers.add(new RequestParamMethodArgumentResolver(getBeanFactory(), false));
@@ -679,7 +688,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 	 * methods including built-in and custom resolvers.
 	 */
 	private List<HandlerMethodArgumentResolver> getDefaultInitBinderArgumentResolvers() {
-		List<HandlerMethodArgumentResolver> resolvers = new ArrayList<>();
+		List<HandlerMethodArgumentResolver> resolvers = new ArrayList<>(20);
 
 		// Annotation-based argument resolution
 		resolvers.add(new RequestParamMethodArgumentResolver(getBeanFactory(), false));
@@ -712,7 +721,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 	 * custom handlers provided via {@link #setReturnValueHandlers}.
 	 */
 	private List<HandlerMethodReturnValueHandler> getDefaultReturnValueHandlers() {
-		List<HandlerMethodReturnValueHandler> handlers = new ArrayList<>();
+		List<HandlerMethodReturnValueHandler> handlers = new ArrayList<>(20);
 
 		// Single-purpose return value types
 		handlers.add(new ModelAndViewMethodReturnValueHandler());
@@ -729,7 +738,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 		handlers.add(new AsyncTaskMethodReturnValueHandler(this.beanFactory));
 
 		// Annotation-based return value types
-		handlers.add(new ModelAttributeMethodProcessor(false));
+		handlers.add(new ServletModelAttributeMethodProcessor(false));
 		handlers.add(new RequestResponseBodyMethodProcessor(getMessageConverters(),
 				this.contentNegotiationManager, this.requestResponseBodyAdvice));
 
@@ -747,7 +756,7 @@ public class RequestMappingHandlerAdapter extends AbstractHandlerMethodAdapter
 			handlers.add(new ModelAndViewResolverMethodReturnValueHandler(getModelAndViewResolvers()));
 		}
 		else {
-			handlers.add(new ModelAttributeMethodProcessor(true));
+			handlers.add(new ServletModelAttributeMethodProcessor(true));
 		}
 
 		return handlers;

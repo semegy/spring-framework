@@ -8,7 +8,7 @@ dependencies {
 	compileOnly(project(":kotlin-coroutines"))
 	optional(project(":spring-context"))
 	optional(project(":spring-oxm"))
-	optional("io.projectreactor.netty:reactor-netty")
+	optional("io.projectreactor.netty:reactor-netty-http")
 	optional("io.rsocket:rsocket-core")
 	optional("io.rsocket:rsocket-transport-netty")
 	optional("com.fasterxml.jackson.core:jackson-databind")
@@ -26,7 +26,7 @@ dependencies {
 	testCompile("org.apache.activemq:activemq-kahadb-store")
 	testCompile("org.apache.activemq:activemq-stomp")
 	testCompile("io.projectreactor:reactor-test")
-	testCompile "io.reactivex.rxjava2:rxjava"
+	testCompile "io.reactivex.rxjava3:rxjava"
 	testCompile("org.jetbrains.kotlin:kotlin-reflect")
 	testCompile("org.jetbrains.kotlin:kotlin-stdlib")
 	testCompile("org.xmlunit:xmlunit-assertj")
@@ -34,4 +34,5 @@ dependencies {
 	testRuntime("com.sun.xml.bind:jaxb-core")
 	testRuntime("com.sun.xml.bind:jaxb-impl")
 	testRuntime("com.sun.activation:javax.activation")
+	testRuntime(project(":spring-context"))
 }
